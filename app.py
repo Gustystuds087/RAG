@@ -7,21 +7,23 @@ import os
 
 import streamlit as st
 
+# set_page_config MUST be the very first Streamlit command.
+st.set_page_config(page_title="MedGraphy Clone", page_icon="💊", layout="wide")
+
 # --- Bridge Streamlit Cloud secrets into env BEFORE importing config ---
 # On Streamlit Cloud, secrets live in st.secrets. config.py reads os.environ at
 # import time, so we copy any secrets into the environment first. Locally this
 # is a no-op (st.secrets is empty) and .env is used instead.
 try:
-    for _k, _v in st.secrets.items():
-        os.environ.setdefault(_k, str(_v))
+    if hasattr(st, "secrets"):
+        for _k, _v in st.secrets.items():
+            os.environ.setdefault(_k, str(_v))
 except Exception:
     pass  # no secrets file locally — fine
 
 from src.rag_engine import RagEngine
 from src import config
 from src.setup_data import ensure_chroma
-
-st.set_page_config(page_title="MedGraphy Clone", page_icon="💊", layout="wide")
 
 
 @st.cache_resource(show_spinner="Loading models, vector store, and graph...")

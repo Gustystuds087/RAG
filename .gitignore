@@ -9,3 +9,4 @@ logs/
 venv/
 data/*.csv
 !data/sample_medicines.csv
+_srv_test/
