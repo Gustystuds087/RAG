@@ -27,8 +27,9 @@ from src.setup_data import ensure_chroma
 
 
 @st.cache_resource(show_spinner="Loading models, vector store, and graph...")
-def get_engine():
-    # Download the Chroma store if it isn't already present (cloud deploy).
+def get_engine(cache_key: str):
+    # cache_key (= CHROMA_VERSION) busts this cache when bumped, so a stale
+    # engine from a previous deploy is never reused.
     ensure_chroma()
     return RagEngine()
 
@@ -43,7 +44,7 @@ def main():
         icon="⚠️",
     )
 
-    engine = get_engine()
+    engine = get_engine(config.CHROMA_VERSION)
 
     with st.sidebar:
         st.header("Settings")
