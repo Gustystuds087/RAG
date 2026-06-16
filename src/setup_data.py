@@ -37,15 +37,13 @@ def ensure_chroma():
         # If there's no URL (local dev), always trust the local store.
         if not url:
             return "present"
-        # Cloud: only reuse if the version marker matches the requested version.
-        current = ""
-        if os.path.exists(marker):
-            with open(marker) as f:
-                current = f.read().strip()
-        if current == version:
-            return "present"
-        # Version changed -> wipe and re-download.
-        print(f"Chroma version changed ({current!r} -> {version!r}); refreshing...")
+        # CLOUD: always wipe and re-download so we never serve a stale store.
+        # (Version markers proved unreliable across Streamlit reboots.)
+        try:
+            from .query_logger import logger as _log
+            _log.info("[ensure_chroma] cloud mode -> wiping and re-downloading")
+        except Exception:
+            pass
         shutil.rmtree(config.CHROMA_DIR, ignore_errors=True)
 
     if not url:

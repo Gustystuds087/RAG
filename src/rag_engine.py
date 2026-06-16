@@ -7,6 +7,7 @@ Flow:
     3. Build a context block and ask Groq to answer, grounded in that context.
 """
 import chromadb
+import numpy as np
 from groq import Groq
 from neo4j import GraphDatabase
 from sentence_transformers import SentenceTransformer
@@ -23,14 +24,18 @@ class RagEngine:
         client = chromadb.PersistentClient(path=config.CHROMA_DIR)
         self.collection = client.get_collection(config.CHROMA_COLLECTION)
 
-        # The HNSW index is approximate; a low search_ef returns wrong neighbors.
-        # The build-time setting does NOT reliably survive a copied/unzipped index
-        # (e.g. on cloud deploy), so we re-apply it at runtime to guarantee
-        # accurate search wherever the store was loaded from.
-        try:
-            self.collection.modify(metadata={"hnsw:search_ef": 200})
-        except Exception as e:  # noqa: BLE001
-            print(f"[warn] could not set hnsw:search_ef: {e}")
+        # Load ALL embeddings + metadata into memory once, so vector_search can
+        # do an EXACT brute-force cosine search in numpy. Chroma's HNSW index is
+        # approximate and was returning wrong neighbors on the cloud server
+        # (different recall than local). With only ~5k vectors, brute force is
+        # instant and gives identical, correct results everywhere.
+        got = self.collection.get(include=["embeddings", "metadatas"])
+        self._embs = np.asarray(got["embeddings"], dtype="float32")
+        # normalize so dot product == cosine similarity
+        norms = np.linalg.norm(self._embs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        self._embs = self._embs / norms
+        self._metas = got["metadatas"]
 
         # Graph side (optional — engine still works vector-only if Neo4j is down)
         self.graph = None
@@ -47,30 +52,23 @@ class RagEngine:
         # LLM side
         self.llm = Groq(api_key=config.GROQ_API_KEY) if config.GROQ_API_KEY else None
 
-    # ---------- Step 1: vector search ----------
+    # ---------- Step 1: vector search (exact, in-memory brute force) ----------
     def vector_search(self, query: str, k: int = 5) -> list[dict]:
-        vec = self.embedder.encode([query], normalize_embeddings=True).tolist()
-        res = self.collection.query(
-            query_embeddings=vec,
-            n_results=k,
-            include=["metadatas", "distances"],
-        )
+        q = self.embedder.encode([query], normalize_embeddings=True).astype("float32")[0]
+        # cosine similarity against every stored (normalized) vector
+        sims = self._embs @ q
+        top = np.argsort(-sims)[:k]
 
         hits = []
-        metadatas = res["metadatas"][0]
-        distances = res["distances"][0]
-        for meta, dist in zip(metadatas, distances):
-            # Chroma returns cosine DISTANCE (0 = identical). Convert to a
-            # similarity SCORE so it reads the same as the old FAISS scores.
-            score = 1.0 - float(dist)
+        for i in top:
+            meta = self._metas[int(i)]
             hits.append({
                 "name": meta.get("name", ""),
                 "uses": meta.get("uses", ""),
                 "composition": meta.get("composition", ""),
-                # metadata stored these as " | "-joined strings; split back.
                 "side_effects": [s for s in meta.get("side_effects", "").split(" | ") if s],
                 "substitutes": [s for s in meta.get("substitutes", "").split(" | ") if s],
-                "score": score,
+                "score": float(sims[int(i)]),
             })
         return hits
 
