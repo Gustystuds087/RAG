@@ -26,8 +26,12 @@ def ensure_chroma():
     marker = os.path.join(config.CHROMA_DIR, ".version")
 
     present = os.path.isdir(config.CHROMA_DIR) and os.listdir(config.CHROMA_DIR)
-    print(f"[ensure_chroma] dir={config.CHROMA_DIR} present={bool(present)} "
-          f"url_set={bool(url)} version={version!r}")
+    try:
+        from .query_logger import logger as _log
+        _log.info("[ensure_chroma] dir=%s present=%s url_set=%s version=%r",
+                  config.CHROMA_DIR, bool(present), bool(url), version)
+    except Exception:
+        pass
 
     if present:
         # If there's no URL (local dev), always trust the local store.

@@ -24,11 +24,13 @@ except Exception:
 from src.rag_engine import RagEngine
 from src import config
 from src.setup_data import ensure_chroma
+from src.query_logger import logger as _log
 
 # Run the store bootstrap ONCE at import time (not inside the cached function),
 # so it always executes on a fresh container regardless of resource caching.
-print(f"[app] CHROMA_URL set={bool(config.CHROMA_URL)} VERSION={config.CHROMA_VERSION!r}")
+_log.info("[app] CHROMA_URL set=%s VERSION=%r", bool(config.CHROMA_URL), config.CHROMA_VERSION)
 ensure_chroma()
+_log.info("[app] ensure_chroma done")
 
 
 @st.cache_resource(show_spinner="Loading models, vector store, and graph...")
