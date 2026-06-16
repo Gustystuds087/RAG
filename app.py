@@ -17,7 +17,7 @@ st.set_page_config(page_title="MedGraphy Clone", page_icon="💊", layout="wide"
 try:
     if hasattr(st, "secrets"):
         for _k, _v in st.secrets.items():
-            os.environ.setdefault(_k, str(_v))
+            os.environ[_k] = str(_v)   # direct set (not setdefault) to win over stale env
 except Exception:
     pass  # no secrets file locally — fine
 
@@ -25,12 +25,16 @@ from src.rag_engine import RagEngine
 from src import config
 from src.setup_data import ensure_chroma
 
+# Run the store bootstrap ONCE at import time (not inside the cached function),
+# so it always executes on a fresh container regardless of resource caching.
+print(f"[app] CHROMA_URL set={bool(config.CHROMA_URL)} VERSION={config.CHROMA_VERSION!r}")
+ensure_chroma()
+
 
 @st.cache_resource(show_spinner="Loading models, vector store, and graph...")
 def get_engine(cache_key: str):
     # cache_key (= CHROMA_VERSION) busts this cache when bumped, so a stale
     # engine from a previous deploy is never reused.
-    ensure_chroma()
     return RagEngine()
 
 
