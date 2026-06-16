@@ -37,6 +37,10 @@ CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "medicines")
 # where the folder isn't in the repo. Leave empty for local dev.
 CHROMA_URL = os.getenv("CHROMA_URL", "")
 
+# Bump this (via env/secret) whenever you re-upload a new Chroma zip, to force
+# the cloud app to discard its cached store and re-download the new one.
+CHROMA_VERSION = os.getenv("CHROMA_VERSION", "1")
+
 # ---- Dataset schema ----
 # The Kaggle "medicine dataset" columns we care about. The loader is tolerant:
 # if a column is missing it is simply skipped.

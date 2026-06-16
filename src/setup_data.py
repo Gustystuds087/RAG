@@ -8,6 +8,7 @@ app never has to re-embed 5000 medicines on a small server.
 If CHROMA_DIR already exists (e.g. local dev), it does nothing.
 """
 import os
+import shutil
 import zipfile
 import urllib.request
 
@@ -15,12 +16,32 @@ from . import config
 
 
 def ensure_chroma():
-    """Make sure the Chroma store exists locally; download it if not."""
-    # Already present (local dev, or a previous boot) -> nothing to do.
-    if os.path.isdir(config.CHROMA_DIR) and os.listdir(config.CHROMA_DIR):
-        return "present"
+    """Make sure the Chroma store exists locally; download it if not.
 
+    Uses a version marker so a re-uploaded store can force a fresh download:
+    bump CHROMA_VERSION (env/secret) and the cached store is replaced on boot.
+    """
     url = getattr(config, "CHROMA_URL", "")
+    version = getattr(config, "CHROMA_VERSION", "1")
+    marker = os.path.join(config.CHROMA_DIR, ".version")
+
+    present = os.path.isdir(config.CHROMA_DIR) and os.listdir(config.CHROMA_DIR)
+
+    if present:
+        # If there's no URL (local dev), always trust the local store.
+        if not url:
+            return "present"
+        # Cloud: only reuse if the version marker matches the requested version.
+        current = ""
+        if os.path.exists(marker):
+            with open(marker) as f:
+                current = f.read().strip()
+        if current == version:
+            return "present"
+        # Version changed -> wipe and re-download.
+        print(f"Chroma version changed ({current!r} -> {version!r}); refreshing...")
+        shutil.rmtree(config.CHROMA_DIR, ignore_errors=True)
+
     if not url:
         raise RuntimeError(
             f"Chroma store not found at '{config.CHROMA_DIR}' and CHROMA_URL is "
@@ -51,6 +72,10 @@ def ensure_chroma():
                 os.rename(os.path.join(nested, item),
                           os.path.join(config.CHROMA_DIR, item))
             os.rmdir(nested)
+
+    # Stamp the version so we don't re-download until CHROMA_VERSION changes.
+    with open(os.path.join(config.CHROMA_DIR, ".version"), "w") as f:
+        f.write(version)
 
     print("Chroma store ready.")
     return "downloaded"
