@@ -23,6 +23,15 @@ class RagEngine:
         client = chromadb.PersistentClient(path=config.CHROMA_DIR)
         self.collection = client.get_collection(config.CHROMA_COLLECTION)
 
+        # The HNSW index is approximate; a low search_ef returns wrong neighbors.
+        # The build-time setting does NOT reliably survive a copied/unzipped index
+        # (e.g. on cloud deploy), so we re-apply it at runtime to guarantee
+        # accurate search wherever the store was loaded from.
+        try:
+            self.collection.modify(metadata={"hnsw:search_ef": 200})
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] could not set hnsw:search_ef: {e}")
+
         # Graph side (optional — engine still works vector-only if Neo4j is down)
         self.graph = None
         if config.NEO4J_URI and config.NEO4J_PASSWORD:
