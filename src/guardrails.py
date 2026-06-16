@@ -152,6 +152,11 @@ ABUSE_MESSAGE = (
     "Please rephrase your question without abusive language and I'll do my best to help."
 )
 
+HATE_MESSAGE = (
+    "I won't respond to hate speech or slurs. I'm happy to help with genuine "
+    "medicine questions asked respectfully."
+)
+
 INJECTION_MESSAGE = (
     "I can only provide medicine information from my database and can't change my "
     "instructions or role. Please ask a normal question about a medicine, its uses, "
@@ -211,12 +216,20 @@ _DANGEROUS_TERMS = [
     "maximum dose to", "how many pills to",
 ]
 
-# Profanity / slurs. We use word-boundary matching so we don't flag substrings
-# inside legitimate words (e.g. "assess", "Scunthorpe"). Stored as a set.
+# Hate speech / slurs (racial, etc.). These ALWAYS block with a firm message,
+# regardless of any medical content in the message. Word-boundary matched.
+# (Kept intentionally short; the LLM classifier backstops anything missed.)
+_SLURS = {
+    "nigger", "nigga", "faggot", "fag", "chink", "spic", "kike", "tranny",
+    "coon", "wetback", "gook", "retard",
+}
+
+# Ordinary profanity (not hate speech). We use word-boundary matching so we
+# don't flag substrings inside legitimate words (e.g. "assess", "Scunthorpe").
 _PROFANITY = {
     "fuck", "fucking", "fucker", "shit", "bullshit", "bitch", "bastard",
     "asshole", "dick", "cunt", "motherfucker", "dumbass", "jackass",
-    "prick", "wanker", "slut", "whore", "retard", "moron", "idiot",
+    "prick", "wanker", "slut", "whore", "moron", "idiot",
 }
 
 # If profanity appears alongside any of these, it's likely a real (if salty)
@@ -257,10 +270,20 @@ def injection_check(query: str) -> GuardResult:
     return GuardResult(blocked=False)
 
 
-def _contains_profanity(q: str) -> bool:
+def _words(q: str) -> set:
     import re
-    words = set(re.findall(r"[a-z]+", q))
-    return bool(words & _PROFANITY)
+    return set(re.findall(r"[a-z]+", q))
+
+
+def _contains_profanity(q: str) -> bool:
+    return bool(_words(q) & _PROFANITY)
+
+
+def hate_check(query: str) -> GuardResult:
+    """Slurs / hate speech ALWAYS block, regardless of any medical content."""
+    if _words(query.lower()) & _SLURS:
+        return GuardResult(blocked=True, message=HATE_MESSAGE, reason="hate")
+    return GuardResult(blocked=False)
 
 
 def profanity_check(query: str) -> GuardResult:
@@ -300,6 +323,12 @@ def rule_based_input_check(query: str) -> GuardResult:
     # Intent to harm another person — distinct from medicine misuse.
     if any(term in q for term in _HARM_OTHERS_TERMS):
         return GuardResult(blocked=True, message=HARM_OTHERS_MESSAGE, reason="harm-others")
+
+    # Hate speech / slurs — always block with the hate message (NOT the dosing
+    # one). Checked before 'dangerous' so a slur never gets the wrong response.
+    hate = hate_check(query)
+    if hate.blocked:
+        return hate
 
     if any(term in q for term in _DANGEROUS_TERMS):
         return GuardResult(blocked=True, message=DANGEROUS_MESSAGE, reason="dangerous")
@@ -341,6 +370,7 @@ def llm_input_check(query: str, llm) -> GuardResult:
         "  SELFHARM  - the person expresses wanting to harm themselves, end their "
         "life, or commit suicide, by ANY method (pills, jumping, hanging, etc.)\n"
         "  HARMOTHERS - seeks to hurt, kill, poison, or harm ANOTHER person\n"
+        "  HATE      - contains a slur or hate speech toward a group or person\n"
         "  DANGEROUS - seeks to misuse medicine, overdose intentionally, get high, or illegal use\n"
         "\n"
         "Examples:\n"
@@ -380,6 +410,8 @@ def llm_input_check(query: str, llm) -> GuardResult:
         return GuardResult(blocked=True, message=CRISIS_MESSAGE, reason="crisis-llm")
     if "HARMOTHERS" in label:
         return GuardResult(blocked=True, message=HARM_OTHERS_MESSAGE, reason="harm-others-llm")
+    if "HATE" in label:
+        return GuardResult(blocked=True, message=HATE_MESSAGE, reason="hate-llm")
     if "DANGEROUS" in label:
         return GuardResult(blocked=True, message=DANGEROUS_MESSAGE, reason="dangerous-llm")
     if "OFFTOPIC" in label:
