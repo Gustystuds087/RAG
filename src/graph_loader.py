@@ -9,6 +9,7 @@ Graph model:
 
 Run once after building data:
     python -m src.graph_loader
+    dummy commit to trigger cloud deploy with the new graph
 """
 import re
 
