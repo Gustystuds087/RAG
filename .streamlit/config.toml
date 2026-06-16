@@ -1,0 +1,7 @@
+[server]
+headless = true
+# Keep memory modest for the free tier.
+maxUploadSize = 5
+
+[theme]
+primaryColor = "#4F8BF9"

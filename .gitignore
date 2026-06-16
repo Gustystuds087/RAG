@@ -1,0 +1,11 @@
+.env
+.streamlit/secrets.toml
+chroma.zip
+__pycache__/
+*.pyc
+artifacts/
+logs/
+.venv/
+venv/
+data/*.csv
+!data/sample_medicines.csv
