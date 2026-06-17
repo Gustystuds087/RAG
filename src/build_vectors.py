@@ -1,13 +1,19 @@
-"""Build the ChromaDB vector store from medicine records.
+"""Build the vector store as plain files: embeddings.npy + meta.json.
 
-Replaces the old FAISS index. Chroma stores the embedding AND the medicine
-metadata together (and persists to a folder), so there is no separate
-meta.pkl to keep in sync.
+We deliberately do NOT use ChromaDB's HNSW index — it is an approximate index
+that returned wrong neighbors when the store was copied to a cloud server.
+Instead we save the raw (normalized) embeddings to a numpy file and the
+medicine metadata to JSON. At query time the engine loads these (instant) and
+does an EXACT brute-force cosine search. With ~5k vectors this is fast,
+correct, and behaves identically on every machine.
 
 Run once (or whenever the data changes):
     python -m src.build_vectors
 """
-import chromadb
+import os
+import json
+
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from . import config
@@ -25,59 +31,29 @@ def build_store():
         batch_size=64,
         show_progress_bar=True,
         normalize_embeddings=True,
-    ).tolist()
+    ).astype("float32")
 
-    # Persistent client = data saved to disk in CHROMA_DIR (no server needed).
-    client = chromadb.PersistentClient(path=config.CHROMA_DIR)
-
-    # Start clean so re-running doesn't duplicate records.
-    try:
-        client.delete_collection(config.CHROMA_COLLECTION)
-    except Exception:
-        pass
-
-    # cosine distance matches our normalized embeddings.
-    # The HNSW index is approximate; the default search/construction effort is
-    # too low for ~5k vectors and returns wrong neighbors. Raise ef + M so the
-    # index is accurate (these values make recall effectively exact at this size).
-    collection = client.create_collection(
-        name=config.CHROMA_COLLECTION,
-        metadata={
-            "hnsw:space": "cosine",
-            "hnsw:construction_ef": 200,
-            "hnsw:search_ef": 200,
-            "hnsw:M": 32,
-        },
-    )
-
-    # Chroma stores: id, embedding, the document text, and metadata.
-    # Lists must be flattened to strings for metadata (Chroma allows only
-    # str/int/float/bool), so we join lists with " | ".
-    ids = [str(r["id"]) for r in records]
-    metadatas = [
+    metas = [
         {
             "name": r["name"],
             "uses": r["uses"],
             "composition": r["composition"],
-            "side_effects": " | ".join(r["side_effects"]),
-            "substitutes": " | ".join(r["substitutes"]),
+            "side_effects": r["side_effects"],
+            "substitutes": r["substitutes"],
         }
         for r in records
     ]
 
-    # Add in batches (Chroma has a per-call cap).
-    BATCH = 1000
-    for i in range(0, len(records), BATCH):
-        collection.add(
-            ids=ids[i:i + BATCH],
-            embeddings=embeddings[i:i + BATCH],
-            documents=texts[i:i + BATCH],
-            metadatas=metadatas[i:i + BATCH],
-        )
-        print(f"  added {min(i + BATCH, len(records))}/{len(records)}")
+    os.makedirs(config.CHROMA_DIR, exist_ok=True)
+    emb_path = os.path.join(config.CHROMA_DIR, "embeddings.npy")
+    meta_path = os.path.join(config.CHROMA_DIR, "meta.json")
 
-    print(f"Done. ChromaDB collection '{config.CHROMA_COLLECTION}' "
-          f"has {collection.count()} vectors -> {config.CHROMA_DIR}")
+    np.save(emb_path, embeddings)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metas, f, ensure_ascii=False)
+
+    print(f"Saved {embeddings.shape[0]} embeddings (dim={embeddings.shape[1]}) -> {emb_path}")
+    print(f"Saved metadata -> {meta_path}")
 
 
 if __name__ == "__main__":

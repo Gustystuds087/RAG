@@ -1,7 +1,6 @@
 streamlit==1.39.0
 pandas==2.2.3
 numpy==1.26.4
-chromadb==0.5.23
 sentence-transformers==3.2.1
 transformers==4.46.3
 neo4j==5.25.0

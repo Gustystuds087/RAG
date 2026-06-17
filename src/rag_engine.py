@@ -1,12 +1,18 @@
-"""Hybrid RAG engine: ChromaDB (semantic) + Neo4j (graph) + Groq (generation).
+"""Hybrid RAG engine: vector (semantic) + Neo4j (graph) + Groq (generation).
 
 Flow:
-    1. Embed the user's question and search ChromaDB -> top-k medicines.
+    1. Embed the user's question and brute-force cosine search -> top-k medicines.
     2. For each hit, traverse Neo4j to pull conditions, side effects,
        ingredients, and substitutes (the "graph expansion").
     3. Build a context block and ask Groq to answer, grounded in that context.
+
+The vector store is just embeddings.npy + meta.json (built by build_vectors.py).
+Search is an exact brute-force cosine — no ChromaDB / HNSW — so results are
+correct and identical on every machine, and startup is instant (just loads files).
 """
-import chromadb
+import os
+import json
+
 import numpy as np
 from groq import Groq
 from neo4j import GraphDatabase
@@ -19,23 +25,13 @@ from .query_logger import log_query, log_cypher
 
 class RagEngine:
     def __init__(self):
-        # Vector side — ChromaDB (persistent, loads from disk; no server)
+        # Vector side — load precomputed embeddings + metadata (instant).
         self.embedder = SentenceTransformer(config.EMBED_MODEL)
-        client = chromadb.PersistentClient(path=config.CHROMA_DIR)
-        self.collection = client.get_collection(config.CHROMA_COLLECTION)
-
-        # Load ALL embeddings + metadata into memory once, so vector_search can
-        # do an EXACT brute-force cosine search in numpy. Chroma's HNSW index is
-        # approximate and was returning wrong neighbors on the cloud server
-        # (different recall than local). With only ~5k vectors, brute force is
-        # instant and gives identical, correct results everywhere.
-        got = self.collection.get(include=["embeddings", "metadatas"])
-        self._embs = np.asarray(got["embeddings"], dtype="float32")
-        # normalize so dot product == cosine similarity
-        norms = np.linalg.norm(self._embs, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        self._embs = self._embs / norms
-        self._metas = got["metadatas"]
+        emb_path = os.path.join(config.CHROMA_DIR, "embeddings.npy")
+        meta_path = os.path.join(config.CHROMA_DIR, "meta.json")
+        self._embs = np.load(emb_path).astype("float32")  # already normalized
+        with open(meta_path, encoding="utf-8") as f:
+            self._metas = json.load(f)
 
         # Graph side (optional — engine still works vector-only if Neo4j is down)
         self.graph = None
@@ -52,22 +48,21 @@ class RagEngine:
         # LLM side
         self.llm = Groq(api_key=config.GROQ_API_KEY) if config.GROQ_API_KEY else None
 
-    # ---------- Step 1: vector search (exact, in-memory brute force) ----------
+    # ---------- Step 1: vector search (exact brute-force cosine) ----------
     def vector_search(self, query: str, k: int = 5) -> list[dict]:
         q = self.embedder.encode([query], normalize_embeddings=True).astype("float32")[0]
-        # cosine similarity against every stored (normalized) vector
-        sims = self._embs @ q
+        sims = self._embs @ q                 # cosine sim (vectors are normalized)
         top = np.argsort(-sims)[:k]
 
         hits = []
         for i in top:
-            meta = self._metas[int(i)]
+            m = self._metas[int(i)]
             hits.append({
-                "name": meta.get("name", ""),
-                "uses": meta.get("uses", ""),
-                "composition": meta.get("composition", ""),
-                "side_effects": [s for s in meta.get("side_effects", "").split(" | ") if s],
-                "substitutes": [s for s in meta.get("substitutes", "").split(" | ") if s],
+                "name": m.get("name", ""),
+                "uses": m.get("uses", ""),
+                "composition": m.get("composition", ""),
+                "side_effects": m.get("side_effects", []),
+                "substitutes": m.get("substitutes", []),
                 "score": float(sims[int(i)]),
             })
         return hits
