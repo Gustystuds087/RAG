@@ -1,4 +1,4 @@
-"""MedGraphy-style hybrid RAG app (ChromaDB + Neo4j + Groq).
+"""MediSage — hybrid RAG app (ChromaDB + Neo4j + Groq).
 
 Run locally:
     streamlit run app.py
@@ -8,7 +8,7 @@ import os
 import streamlit as st
 
 # set_page_config MUST be the very first Streamlit command.
-st.set_page_config(page_title="MedGraphy Clone", page_icon="💊", layout="wide")
+st.set_page_config(page_title="MediSage", page_icon="💊", layout="wide")
 
 # --- Bridge Streamlit Cloud secrets into env BEFORE importing config ---
 # On Streamlit Cloud, secrets live in st.secrets. config.py reads os.environ at
@@ -35,7 +35,7 @@ def get_engine(cache_key: str):
 
 
 def main():
-    st.title("💊 MedGraphy Clone — Hybrid RAG for Medicines")
+    st.title("💊 MediSage — Your Medicine Knowledge Assistant")
     st.caption("ChromaDB (semantic) + Neo4j (graph) + Groq (LLM)")
     st.info(
         "⚠️ **Demo project — not a medical device.** Information here is from a "

@@ -1,4 +1,4 @@
-# MedGraphy Clone — Hybrid RAG for Medicines
+# MediSage — Your Medicine Knowledge Assistant
 
 An intelligent drug-information app combining a **graph database** (Neo4j) and
 a **vector database** (ChromaDB) with a **Groq LLM** to answer medical questions
