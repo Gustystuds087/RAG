@@ -1,4 +1,4 @@
-"""MediSage — hybrid RAG app (ChromaDB + Neo4j + Groq).
+"""MediSage — agentic GraphRAG app (Neo4j graph+vectors + Gemini + Groq).
 
 Run locally:
     streamlit run app.py
@@ -8,34 +8,151 @@ import os
 import streamlit as st
 
 # set_page_config MUST be the very first Streamlit command.
-st.set_page_config(page_title="MediSage", page_icon="💊", layout="wide")
+st.set_page_config(
+    page_title="MediSage",
+    page_icon="💊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # --- Bridge Streamlit Cloud secrets into env BEFORE importing config ---
-# On Streamlit Cloud, secrets live in st.secrets. config.py reads os.environ at
-# import time, so we copy any secrets into the environment first. Locally this
-# is a no-op (st.secrets is empty) and .env is used instead.
 try:
     if hasattr(st, "secrets"):
         for _k, _v in st.secrets.items():
-            os.environ[_k] = str(_v)   # direct set (not setdefault) to win over stale env
+            os.environ[_k] = str(_v)
 except Exception:
     pass  # no secrets file locally — fine
 
 from src.rag_engine import RagEngine
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Theme — dark + neon, with subtle animations (injected CSS)
+# ─────────────────────────────────────────────────────────────────────────────
+NEON = "#00e5ff"        # cyan
+NEON2 = "#a855f7"       # purple
+NEON3 = "#22ff88"       # green
+
+CSS = """
+<style>
+/* ---- base dark canvas ---- */
+.stApp {
+    background: radial-gradient(circle at 20% 0%, #11142a 0%, #0a0b14 45%, #060710 100%);
+    color: #e6e9ff;
+}
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d1024 0%, #0a0b16 100%);
+    border-right: 1px solid rgba(0,229,255,0.15);
+}
+
+/* ---- animated neon title ---- */
+.medi-hero {
+    text-align: center;
+    padding: 1.4rem 0 0.4rem 0;
+}
+.medi-title {
+    font-size: 3rem;
+    font-weight: 800;
+    letter-spacing: 1px;
+    background: linear-gradient(90deg, #00e5ff, #a855f7, #22ff88, #00e5ff);
+    background-size: 300% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 6s linear infinite;
+}
+@keyframes shimmer { to { background-position: 300% center; } }
+
+.medi-sub {
+    text-align: center;
+    color: #8b93c7;
+    font-size: 0.95rem;
+    margin-top: -0.2rem;
+}
+.medi-pill {
+    display: inline-block;
+    margin-top: 0.6rem;
+    padding: 0.25rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: #00e5ff;
+    border: 1px solid rgba(0,229,255,0.4);
+    background: rgba(0,229,255,0.06);
+    box-shadow: 0 0 18px rgba(0,229,255,0.25);
+    animation: pulse 2.8s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%,100% { box-shadow: 0 0 10px rgba(0,229,255,0.18); }
+    50%     { box-shadow: 0 0 26px rgba(0,229,255,0.45); }
+}
+
+/* ---- input box glow ---- */
+.stTextInput > div > div input {
+    background: rgba(255,255,255,0.03) !important;
+    color: #e6e9ff !important;
+    border: 1px solid rgba(168,85,247,0.4) !important;
+    border-radius: 12px !important;
+}
+.stTextInput > div > div input:focus {
+    border-color: #00e5ff !important;
+    box-shadow: 0 0 0 2px rgba(0,229,255,0.25), 0 0 18px rgba(0,229,255,0.3) !important;
+}
+
+/* ---- answer card ---- */
+.answer-card {
+    background: rgba(168,85,247,0.06);
+    border: 1px solid rgba(168,85,247,0.35);
+    border-radius: 16px;
+    padding: 1.2rem 1.4rem;
+    box-shadow: 0 0 30px rgba(168,85,247,0.18);
+    animation: rise 0.5s ease;
+}
+@keyframes rise { from { opacity:0; transform: translateY(12px);} to {opacity:1; transform:none;} }
+
+/* ---- source chips ---- */
+.src-chip {
+    display:inline-block; margin:4px 6px 0 0; padding:6px 12px;
+    border-radius:10px; font-size:0.85rem;
+    background: rgba(34,255,136,0.07);
+    border:1px solid rgba(34,255,136,0.35);
+    color:#bafce0;
+}
+.src-score { color:#22ff88; font-weight:700; }
+
+/* ---- status dots ---- */
+.dot-ok  { color:#22ff88; }
+.dot-off { color:#ff5c7c; }
+
+/* expander + buttons */
+.stExpander { border:1px solid rgba(0,229,255,0.15) !important; border-radius:12px !important; }
+</style>
+"""
+
+
 @st.cache_resource(show_spinner="Loading models and connecting to the graph...")
 def get_engine():
-    # Vectors + graph both live in Neo4j now — nothing to download.
     return RagEngine()
 
 
 def main():
-    st.title("💊 MediSage — Your Medicine Knowledge Assistant")
-    st.caption("Neo4j (graph + vectors) + Gemini (LLM-generated Cypher)")
+    st.markdown(CSS, unsafe_allow_html=True)
+
+    # ---- animated hero header ----
+    st.markdown(
+        """
+        <div class="medi-hero">
+            <div class="medi-title">💊 MediSage</div>
+            <div class="medi-sub">Your Medicine Knowledge Assistant — Neo4j GraphRAG · Gemini · Groq</div>
+            <div class="medi-pill">⚡ agentic graph + vector retrieval</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
     st.info(
-        "⚠️ **Demo project — not a medical device.** Information here is from a "
-        "public dataset, may be incomplete or wrong, and is **not medical advice.** "
+        "⚠️ **Demo project — not a medical device.** Information is from a public "
+        "dataset, may be incomplete or wrong, and is **not medical advice.** "
         "Always consult a qualified doctor or pharmacist.",
         icon="⚠️",
     )
@@ -43,17 +160,21 @@ def main():
     engine = get_engine()
 
     with st.sidebar:
-        st.header("Settings")
+        st.markdown("### ⚙️ Settings")
         mode = st.radio(
             "Query mode",
             ["General Q&A", "Medicine lookup", "Find by condition", "Side effects"],
         )
         top_k = st.slider("Results to retrieve (k)", 1, 10, 5)
         st.divider()
-        st.write("**Neo4j:**", "✅ connected" if engine.graph else "❌ not connected")
-        st.write("**LLM:**", "✅ ready" if engine.llm_ready else "⚠️ no key")
+        st.markdown("### 🔌 Status")
+        neo = ("<span class='dot-ok'>● connected</span>" if engine.graph
+               else "<span class='dot-off'>● offline</span>")
+        llm = ("<span class='dot-ok'>● ready</span>" if engine.llm_ready
+               else "<span class='dot-off'>● no key</span>")
+        st.markdown(f"**Neo4j** &nbsp; {neo}", unsafe_allow_html=True)
+        st.markdown(f"**LLM** &nbsp;&nbsp;&nbsp; {llm}", unsafe_allow_html=True)
 
-    # Tailor the prompt to the selected mode.
     placeholder = {
         "General Q&A": "What can I take for a headache?",
         "Medicine lookup": "Paracetamol",
@@ -61,7 +182,7 @@ def main():
         "Side effects": "Ibuprofen",
     }[mode]
 
-    query = st.text_input("Your question", placeholder=placeholder)
+    query = st.text_input("💬 Ask about a medicine", placeholder=placeholder)
     if not query:
         return
 
@@ -74,27 +195,38 @@ def main():
     else:
         question = query
 
-    with st.spinner("Retrieving and generating..."):
+    with st.spinner("🧠 Thinking — searching the graph & generating an answer..."):
         result = engine.answer(question, k=top_k)
 
-    # A guardrail blocked the query — show a warning, no sources/context.
+    # ---- a guardrail blocked the query ----
     if result.get("blocked"):
-        st.warning(result["answer"])
-        st.caption(f"🛡️ Blocked by guardrail: {result.get('reason', '')}")
+        st.markdown(
+            f"<div class='answer-card' style='border-color:rgba(255,92,124,0.5);"
+            f"box-shadow:0 0 30px rgba(255,92,124,0.18);'>{result['answer']}</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"🛡️ Blocked by guardrail: `{result.get('reason', '')}`")
         return
 
-    st.subheader("Answer")
-    st.write(result["answer"])
+    # ---- answer card ----
+    mode_tag = result.get("mode", "")
+    st.markdown("#### 🩺 Answer")
+    st.markdown(f"<div class='answer-card'>{result['answer']}</div>", unsafe_allow_html=True)
+    if mode_tag:
+        st.caption(f"retrieval mode: `{mode_tag}`")
 
-    with st.expander("🔎 Retrieved medicines (sources)"):
+    # ---- source chips ----
+    if result.get("sources"):
+        st.markdown("#### 🔎 Retrieved medicines")
+        chips = ""
         for h in result["sources"]:
-            st.markdown(
-                f"**{h['name']}** — similarity `{h['score']:.3f}`  \n"
-                f"Uses: {h.get('uses') or '—'}"
-            )
+            score = h.get("score", 0.0)
+            chips += (f"<span class='src-chip'>{h['name']} "
+                      f"<span class='src-score'>{score:.2f}</span></span>")
+        st.markdown(chips, unsafe_allow_html=True)
 
     with st.expander("🧩 Raw context sent to the LLM"):
-        st.code(result["context"])
+        st.code(result.get("context", ""))
 
 
 if __name__ == "__main__":

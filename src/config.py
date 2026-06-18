@@ -29,21 +29,8 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 # ---- Embeddings ----
 EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
 
-# ---- Paths ----
+# ---- Data (used only by graph_loader when (re)building the graph) ----
 DATA_CSV = os.getenv("DATA_CSV", "data/medicines.csv")
-
-# ---- ChromaDB (vector store; replaces FAISS) ----
-# Chroma persists to a local folder — no server needed.
-CHROMA_DIR = os.getenv("CHROMA_DIR", "artifacts/chroma")
-CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "medicines")
-
-# URL to a zipped Chroma folder, used to bootstrap the store on cloud deploys
-# where the folder isn't in the repo. Leave empty for local dev.
-CHROMA_URL = os.getenv("CHROMA_URL", "")
-
-# Bump this (via env/secret) whenever you re-upload a new Chroma zip, to force
-# the cloud app to discard its cached store and re-download the new one.
-CHROMA_VERSION = os.getenv("CHROMA_VERSION", "1")
 
 # ---- Dataset schema ----
 # The Kaggle "medicine dataset" columns we care about. The loader is tolerant:

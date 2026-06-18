@@ -1,7 +1,11 @@
 [server]
 headless = true
-# Keep memory modest for the free tier.
 maxUploadSize = 5
 
 [theme]
-primaryColor = "#4F8BF9"
+base = "dark"
+primaryColor = "#00e5ff"
+backgroundColor = "#0a0b14"
+secondaryBackgroundColor = "#0d1024"
+textColor = "#e6e9ff"
+font = "sans serif"

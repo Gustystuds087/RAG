@@ -1,29 +1,72 @@
 # MediSage — Your Medicine Knowledge Assistant
 
-An intelligent drug-information app combining a **graph database** (Neo4j) and
-a **vector database** (ChromaDB) with a **Groq LLM** to answer medical questions
-about medicines, interactions, conditions, and side effects.
+An **agentic GraphRAG** app that answers questions about medicines — their uses,
+side effects, conditions, and substitutes. It combines a **knowledge graph +
+vector search (both in Neo4j)** with **LLM-generated Cypher queries** and
+guardrails for safety.
 
-This is a hybrid **RAG** (Retrieval-Augmented Generation) pipeline:
+> ⚠️ Educational/demo project. Output is **not medical advice.**
+
+---
+
+## What makes it different
+
+Instead of a fixed retrieval pipeline, **the LLM writes the database query**.
+For each question, Gemini generates a single Cypher query that combines
+**vector (semantic) search** with **graph traversal** — then a safety layer
+validates it is read-only before it runs.
+
+Everything lives in **Neo4j** (graph **and** embeddings) — there is no separate
+vector store to build, ship, or sync.
+
+---
+
+## Architecture
 
 ```
-question ──▶ ChromaDB (semantic search) ──▶ top-k medicines
-                                               │
-                                               ▼
-                                    Neo4j (graph expansion:
-                                    conditions, side effects,
-                                    ingredients, substitutes)
-                                               │
-                                               ▼
-                                context ──▶ Groq LLM ──▶ grounded answer
+USER QUESTION
+   │
+   ▼  [1] GUARDRAILS                rules (instant) + Groq classifier
+   │        emergency / self-harm / harm-others / hate / injection / off-topic
+   │        → blocked here if unsafe
+   ▼
+   ▼  [2] EMBED the question        Sentence-Transformers (all-mpnet) → $queryVector
+   │
+   ▼  [3] GEMINI GENERATES CYPHER   given the graph schema, writes a query that
+   │        combines vector search + graph hops:
+   │          CALL db.index.vector.queryNodes('medicine_embeddings', $k, $queryVector)
+   │          YIELD node AS m, score
+   │          OPTIONAL MATCH (m)-[:TREATS]->(c) ...
+   │
+   ▼  [4] VALIDATE read-only        reject CREATE/DELETE/MERGE/SET/DROP/...
+   │        → retry once → else FALL BACK to a safe plain vector search
+   ▼
+   ▼  [5] RUN ON NEO4J              vector search + graph traversal, one query
+   │
+   ▼  [6] LOW-CONFIDENCE GUARD      nothing relevant? → refuse instead of guessing
+   │
+   ▼  [7] GEMINI WRITES THE ANSWER  grounded ONLY in retrieved context + disclaimer
+   │
+   ▼  ANSWER  (shown in Streamlit with sources + raw-context expanders)
 ```
+
+### Two-LLM split (free-tier friendly)
+| Task | Provider | Why |
+|------|----------|-----|
+| Guardrail classification | **Groq** (Llama) | fast, simple, separate quota |
+| Cypher generation + answers | **Gemini 2.0 Flash** | needs reasoning/quality |
+
+Each provider **falls back to the other** if one is unavailable or rate-limited.
+
+---
 
 ## Tech stack
 | Layer | Tool |
 |-------|------|
-| Vector search | ChromaDB + Sentence-Transformers (`all-mpnet-base-v2`) |
-| Knowledge graph | Neo4j |
-| LLM | Groq (`llama-3.3-70b-versatile`) |
+| Graph **and** vectors | **Neo4j** (native vector index) |
+| Embeddings | Sentence-Transformers (`all-mpnet-base-v2`) |
+| Query generation + answers | **Gemini** (`gemini-2.0-flash`) |
+| Guardrail classifier | **Groq** (`llama-3.3-70b-versatile`) |
 | UI | Streamlit |
 
 ---
@@ -31,39 +74,32 @@ question ──▶ ChromaDB (semantic search) ──▶ top-k medicines
 ## Setup
 
 ### 1. Install dependencies
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate        # Windows PowerShell
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ### 2. Configure credentials
 Copy `.env.example` to `.env` and fill in:
-
-```bash
-copy .env.example .env
-```
-
-- **Groq key** — free at https://console.groq.com/keys
-- **Neo4j** — free cloud instance at https://neo4j.com/cloud/aura-free/
-  (create a database, download/copy the URI + password)
-
-ChromaDB needs **no account** — it runs locally and saves to `artifacts/chroma/`.
+- **Neo4j** — free instance at https://neo4j.com/cloud/aura-free/ (URI, user, password, database)
+- **Gemini key** — free at https://aistudio.google.com/apikey
+- **Groq key** — free at https://console.groq.com/keys (used for guardrails)
 
 ### 3. Get data
-A small `data/sample_medicines.csv` is included so you can run immediately. For
-the full experience, download the Kaggle "250k Medicines Usage, Side Effects and
-Substitutes" dataset, save it as `data/medicine_dataset.csv`, and set
-`DATA_CSV=data/medicine_dataset.csv` in `.env`.
+Download the Kaggle "250k Medicines Usage, Side Effects and Substitutes" dataset,
+save it as `data/medicine_dataset.csv` (or use the included
+`data/sample_medicines.csv`).
 
-### 4. Build the vector store and graph
-```bash
-python -m src.build_vectors   # embeds medicines -> ChromaDB (local)
-python -m src.graph_loader     # loads the Neo4j knowledge graph (optional)
+### 4. Load Neo4j (graph + embeddings) — run once
+```powershell
+python -m src.graph_loader
 ```
+This builds the graph, embeds every medicine onto its node, and creates the
+`medicine_embeddings` vector index. (~5 min for 5k medicines.)
 
 ### 5. Run
-```bash
+```powershell
 python -m streamlit run app.py
 ```
 
@@ -80,17 +116,31 @@ RAG/
 └── src/
     ├── config.py           # env + schema
     ├── data_loader.py      # CSV -> clean records (samples across full dataset)
-    ├── build_vectors.py    # embed + store in ChromaDB
-    ├── graph_loader.py     # load Neo4j graph
-    ├── rag_engine.py       # ChromaDB + Neo4j + Groq pipeline
+    ├── graph_loader.py     # load Neo4j graph + embeddings + vector index
+    ├── llm.py              # Gemini (primary) + Groq (fast) with fallback
+    ├── cypher_agent.py     # schema + LLM Cypher generation + read-only validation
+    ├── guardrails.py       # input safety (emergency/crisis/harm/hate/injection/…)
+    ├── rag_engine.py       # the full agentic flow
     └── query_logger.py     # logs every query + Cypher to logs/
 ```
 
-## Notes
-- The app runs **vector-only** if Neo4j is unavailable, and shows
-  **retrieved context only** if no Groq key is set — so you can build up
-  incrementally.
-- ChromaDB uses an approximate (HNSW) index; we tune `hnsw:search_ef`/`M` in
-  `build_vectors.py` so results are accurate at this dataset size.
-- ⚠️ This is an educational project. Output is **not medical advice**.
+---
+
+## Safety
+
+- **Input guardrails** — medical emergencies route to help (not medicines),
+  self-harm → crisis lines, threats/hate/profanity refused, off-topic redirected.
+- **Prompt-injection defense** — hardened system prompts + a read-only Cypher
+  validator: any generated query with `CREATE/DELETE/MERGE/SET/DROP/...` is
+  rejected before it runs.
+- **Grounding** — the answer LLM may use ONLY the retrieved context; if a fact
+  (e.g. a dosage) isn't present, it says so instead of inventing one.
+- **Disclaimer** — every answer carries a "not medical advice" notice.
+
+## Deployment notes
+- Vectors + graph both live in Neo4j → **nothing to upload** beyond the code;
+  the deployed app just connects to Neo4j Aura.
+- On Streamlit Cloud: set Python to **3.11** and put all keys in **Secrets**
+  (TOML format, every value quoted).
+- ⚠️ This is an educational project and **not** a medical device.
 ```
