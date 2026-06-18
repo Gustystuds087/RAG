@@ -349,11 +349,12 @@ def rule_based_input_check(query: str) -> GuardResult:
 
 # ---------- 2. LLM-based input classifier (catches what rules miss) ----------
 
-def llm_input_check(query: str, llm) -> GuardResult:
-    """Ask the LLM to classify the query. Fails OPEN (allows) if the LLM is
-    unavailable or returns something unexpected — we don't want a classifier
-    outage to take the whole app down."""
-    if llm is None:
+def llm_input_check(query: str, llm=None) -> GuardResult:
+    """Classify the query with the FAST LLM (Groq, to keep off Gemini's quota).
+    Fails OPEN (allows) if the LLM is unavailable or returns something
+    unexpected — a classifier outage shouldn't take the whole app down."""
+    from . import llm as llm_mod
+    if not llm_mod.available():
         return GuardResult(blocked=False)
 
     system = (
@@ -387,16 +388,7 @@ def llm_input_check(query: str, llm) -> GuardResult:
         "Reply with ONLY the single label word."
     )
     try:
-        resp = llm.chat.completions.create(
-            model=config.GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": query},
-            ],
-            temperature=0,
-            max_tokens=4,
-        )
-        label = resp.choices[0].message.content.strip().upper()
+        label = llm_mod.complete_fast(system, query, temperature=0, max_tokens=8).upper()
     except Exception:  # noqa: BLE001 — fail open
         return GuardResult(blocked=False)
 

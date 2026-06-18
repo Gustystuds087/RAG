@@ -18,7 +18,11 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = _real(os.getenv("NEO4J_PASSWORD", ""))
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
-# ---- Groq ----
+# ---- Gemini (primary LLM) ----
+GEMINI_API_KEY = _real(os.getenv("GEMINI_API_KEY", ""))
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+# ---- Groq (legacy / fallback) ----
 GROQ_API_KEY = _real(os.getenv("GROQ_API_KEY", ""))
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 

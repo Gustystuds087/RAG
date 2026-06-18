@@ -7,13 +7,17 @@ Graph model:
     (:SideEffect {name})   <-[:HAS_SIDE_EFFECT]-  (Medicine)
     (Medicine) -[:SUBSTITUTE_FOR]-> (Medicine)
 
+Each Medicine node also gets an `embedding` property (vector of its doc_text),
+plus a native Neo4j VECTOR INDEX so the app can do semantic search inside Neo4j
+— no separate vector store needed.
+
 Run once after building data:
     python -m src.graph_loader
-    dummy commit to trigger cloud deploy with the new graph
 """
 import re
 
 from neo4j import GraphDatabase
+from sentence_transformers import SentenceTransformer
 
 from . import config
 from .data_loader import load_records
@@ -84,9 +88,44 @@ class GraphLoader:
                 session.run(cypher, rows=batch)
                 print(f"  loaded {min(i + batch_size, len(rows))}/{len(rows)}")
 
+    def add_embeddings(self, records: list[dict], dim: int, batch_size: int = 200):
+        """Embed each medicine's doc_text and store it on its Medicine node."""
+        model = SentenceTransformer(config.EMBED_MODEL)
+        texts = [r["doc_text"] for r in records]
+        print(f"Embedding {len(records)} medicines (dim={dim})...")
+        embs = model.encode(texts, batch_size=64, show_progress_bar=True,
+                            normalize_embeddings=True).tolist()
+
+        rows = [{"name": r["name"], "embedding": e} for r, e in zip(records, embs)]
+        cypher = """
+        UNWIND $rows AS row
+        MATCH (m:Medicine {name: row.name})
+        CALL db.create.setNodeVectorProperty(m, 'embedding', row.embedding)
+        """
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            for i in range(0, len(rows), batch_size):
+                session.run(cypher, rows=rows[i:i + batch_size])
+                print(f"  embedded {min(i + batch_size, len(rows))}/{len(rows)}")
+
+    def create_vector_index(self, dim: int):
+        cypher = f"""
+        CREATE VECTOR INDEX medicine_embeddings IF NOT EXISTS
+        FOR (m:Medicine) ON (m.embedding)
+        OPTIONS {{ indexConfig: {{
+            `vector.dimensions`: {dim},
+            `vector.similarity_function`: 'cosine'
+        }} }}
+        """
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            session.run(cypher)
+        print("Vector index 'medicine_embeddings' created.")
+
 
 def main():
     records = load_records()
+    # dim from the embedding model (mpnet = 768)
+    dim = SentenceTransformer(config.EMBED_MODEL).get_sentence_embedding_dimension()
+
     loader = GraphLoader()
     try:
         print("Setting up constraints...")
@@ -95,7 +134,11 @@ def main():
         loader.wipe()
         print(f"Loading {len(records)} medicines into Neo4j...")
         loader.load(records)
-        print("Done. Graph loaded.")
+        print("Adding embeddings to Medicine nodes...")
+        loader.add_embeddings(records, dim=dim)
+        print("Creating vector index...")
+        loader.create_vector_index(dim=dim)
+        print("Done. Graph + vectors loaded.")
     finally:
         loader.close()
 
