@@ -22,21 +22,17 @@ except Exception:
     pass  # no secrets file locally — fine
 
 from src.rag_engine import RagEngine
-from src import config
-from src.setup_data import ensure_chroma
 
 
-@st.cache_resource(show_spinner="Loading models, vector store, and graph...")
-def get_engine(cache_key: str):
-    # Download the Chroma store if missing (cloud). cache_key (= CHROMA_VERSION)
-    # busts this cache when bumped, so a stale engine is never reused.
-    ensure_chroma()
+@st.cache_resource(show_spinner="Loading models and connecting to the graph...")
+def get_engine():
+    # Vectors + graph both live in Neo4j now — nothing to download.
     return RagEngine()
 
 
 def main():
     st.title("💊 MediSage — Your Medicine Knowledge Assistant")
-    st.caption("ChromaDB (semantic) + Neo4j (graph) + Groq (LLM)")
+    st.caption("Neo4j (graph + vectors) + Gemini (LLM-generated Cypher)")
     st.info(
         "⚠️ **Demo project — not a medical device.** Information here is from a "
         "public dataset, may be incomplete or wrong, and is **not medical advice.** "
@@ -44,7 +40,7 @@ def main():
         icon="⚠️",
     )
 
-    engine = get_engine(config.CHROMA_VERSION)
+    engine = get_engine()
 
     with st.sidebar:
         st.header("Settings")
@@ -54,8 +50,8 @@ def main():
         )
         top_k = st.slider("Results to retrieve (k)", 1, 10, 5)
         st.divider()
-        st.write("**Neo4j:**", "✅ connected" if engine.graph else "⚠️ vector-only")
-        st.write("**Groq:**", "✅ set" if engine.llm else "⚠️ no key")
+        st.write("**Neo4j:**", "✅ connected" if engine.graph else "❌ not connected")
+        st.write("**LLM:**", "✅ ready" if engine.llm_ready else "⚠️ no key")
 
     # Tailor the prompt to the selected mode.
     placeholder = {
