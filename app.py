@@ -334,8 +334,9 @@ def main():
         st.code(result.get("context", ""))
 
     # ---- save this turn into per-session memory (keep only the last 5) ----
+    # store the exact medicines retrieved, so "side effects of these" reuses them
     hist = st.session_state.get("history", [])
-    hist.append({"q": question, "a": result["answer"]})
+    hist.append({"q": question, "a": result["answer"], "meds": result.get("meds", [])})
     st.session_state["history"] = hist[-5:]
 
 

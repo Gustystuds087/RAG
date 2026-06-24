@@ -38,6 +38,16 @@ def _looks_like_followup(q: str) -> bool:
     return len(ql.split()) <= 4  # very short = probably leans on context
 
 
+# phrases that refer to the EXACT set of medicines from the previous turn
+_REFERS_PREV = (" these", " those", " them", " the same", " it", " its", " it's",
+                " that one", " this one", " the above", " all of them")
+
+
+def _refers_to_previous(q: str) -> bool:
+    ql = " " + q.lower().strip()
+    return any(h in ql for h in _REFERS_PREV)
+
+
 class RagEngine:
     def __init__(self):
         self.embedder = SentenceTransformer(config.EMBED_MODEL)
@@ -66,6 +76,34 @@ class RagEngine:
         ) as session:
             res = session.run(cypher, **params, timeout=15)
             return [dict(r) for r in res]
+
+    # ---------- fetch EXACT medicines by name (for "side effects of these") ----------
+    def fetch_medicines(self, names: list[str]) -> list[dict]:
+        if self.graph is None or not names:
+            return []
+        cypher = """
+        UNWIND $names AS nm
+        MATCH (m:Medicine {name: nm})
+        OPTIONAL MATCH (m)-[:HAS_SIDE_EFFECT]->(se:SideEffect)
+        OPTIONAL MATCH (m)-[:SUBSTITUTE_FOR]->(sub:Medicine)
+        OPTIONAL MATCH (m)-[:TREATS]->(c:Condition)
+        RETURN m.name AS name, 1.0 AS score,
+               collect(DISTINCT c.name)  AS conditions,
+               collect(DISTINCT se.name) AS side_effects,
+               collect(DISTINCT sub.name) AS substitutes
+        """
+        rows = self._run_read(cypher, {"names": names})
+        out = []
+        for r in rows:
+            out.append({
+                "name": r.get("name", ""),
+                "uses": ", ".join([x for x in r.get("conditions", []) if x]),
+                "conditions": [x for x in r.get("conditions", []) if x],
+                "side_effects": [x for x in r.get("side_effects", []) if x],
+                "substitutes": [x for x in r.get("substitutes", []) if x],
+                "score": 1.0,
+            })
+        return out
 
     # ---------- plain vector search (the safe fallback) ----------
     def vector_search(self, query: str, k: int = 5) -> list[dict]:
@@ -199,17 +237,28 @@ class RagEngine:
                     "blocked": True, "reason": gate.reason}
         emit("guardrails", "Safety check", "done", "passed ✓")
 
-        # ---- conversation memory: rewrite a follow-up into a standalone query ----
-        # Only rewrite when the question actually looks like a follow-up (saves an
-        # LLM call on standalone questions and avoids rate limits).
+        # ---- conversation memory ----
+        # If the follow-up refers to "these/those/them" AND the previous turn
+        # had specific medicines, reuse THOSE EXACT medicines (fetch their nodes
+        # directly) instead of a fresh vector search that may drift to other meds.
+        prev_meds = history[-1].get("meds") if history else None
+        rows = mode = cypher = None
         search_query = query
-        if history and self.llm_ready and _looks_like_followup(query):
+
+        if (history and prev_meds and _refers_to_previous(query) and self.graph):
+            emit("memory", "Use recent context", "done",
+                 "reusing the same medicines from your last question:\n"
+                 + "\n".join(f"💊 {m}" for m in prev_meds))
+            rows = self.fetch_medicines(prev_meds)
+            mode, cypher = "memory-reuse", ""
+
+        elif history and self.llm_ready and _looks_like_followup(query):
             emit("memory", "Use recent context", "run", "resolving follow-up vs last turns")
             try:
                 last = history[-1]
                 rw_system = (
                     "Rewrite the user's follow-up into ONE short, standalone medicine "
-                    "question. Resolve pronouns (it, its, that, them) to the SINGLE most "
+                    "question. Resolve pronouns (it, its, that) to the SINGLE most "
                     "relevant medicine or topic from the previous turn — do NOT list many "
                     "medicines. Keep it concise. Return ONLY the rewritten question."
                 )
@@ -226,11 +275,13 @@ class RagEngine:
             except Exception:  # noqa: BLE001 — memory is best-effort
                 emit("memory", "Use recent context", "warn", "skipped (rewrite failed)")
 
-        rows, mode, cypher = self.agentic_retrieve(search_query, k=k, step=step)
+        if rows is None:
+            rows, mode, cypher = self.agentic_retrieve(search_query, k=k, step=step)
 
         # build "sources" list for the UI (best-effort from rows)
         sources = [{"name": r.get("name", ""), "score": r.get("score", 0.0),
                     "uses": r.get("uses", "")} for r in rows if r.get("name")]
+        meds = [r["name"] for r in rows if r.get("name")]  # exact names, for memory
 
         # Emit the actual graph nodes that were retrieved, so the timeline can
         # show WHICH medicines (+ related conditions/substitutes) were searched.
@@ -265,7 +316,8 @@ class RagEngine:
         if not self.llm_ready:
             txt = guardrails.enforce_disclaimer("(No LLM key set — context only.)\n\n" + context)
             log_query(query, sources, graph_used, txt)
-            return {"answer": txt, "sources": sources, "context": context, "cypher": cypher}
+            return {"answer": txt, "sources": sources, "context": context,
+                    "cypher": cypher, "meds": meds}
 
         system = (
             "You are a careful medical information assistant.\n"
@@ -309,7 +361,7 @@ class RagEngine:
 
         log_query(query, sources, graph_used, f"[mode:{mode}] " + answer_text)
         return {"answer": answer_text, "sources": sources, "context": context,
-                "mode": mode, "cypher": cypher}
+                "mode": mode, "cypher": cypher, "meds": meds}
 
     def close(self):
         if self.graph is not None:
