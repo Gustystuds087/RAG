@@ -125,8 +125,60 @@ section[data-testid="stSidebar"] {
 
 /* expander + buttons */
 .stExpander { border:1px solid rgba(0,229,255,0.15) !important; border-radius:12px !important; }
+
+/* ---- thinking timeline ---- */
+.tl-title { color:#00e5ff; font-weight:700; font-size:0.95rem; margin-bottom:0.6rem; }
+.tl-step {
+    position:relative; padding:8px 0 8px 28px; border-left:2px solid rgba(255,255,255,0.08);
+    margin-left:8px;
+}
+.tl-dot {
+    position:absolute; left:-9px; top:12px; width:16px; height:16px; border-radius:50%;
+    background:#1a1d33; border:2px solid #2a2e4a;
+}
+.tl-run  .tl-dot { border-color:#00e5ff; background:#06283a;
+    box-shadow:0 0 14px rgba(0,229,255,0.7); animation:blink 1s ease-in-out infinite; }
+.tl-done .tl-dot { border-color:#22ff88; background:#0c2a1c; box-shadow:0 0 10px rgba(34,255,136,0.5); }
+.tl-warn .tl-dot { border-color:#ffb020; background:#2a210c; box-shadow:0 0 10px rgba(255,176,32,0.5); }
+.tl-block .tl-dot{ border-color:#ff5c7c; background:#2a0c14; box-shadow:0 0 10px rgba(255,92,124,0.5); }
+@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.45;} }
+.tl-label { font-weight:600; color:#e6e9ff; font-size:0.9rem; }
+.tl-run  .tl-label { color:#00e5ff; }
+.tl-done .tl-label { color:#bafce0; }
+.tl-detail { color:#8b93c7; font-size:0.78rem; margin-top:2px; word-break:break-word;
+    max-height:3.2rem; overflow:hidden; }
 </style>
 """
+
+# the fixed pipeline stages we display in the timeline (in order)
+TIMELINE_STEPS = [
+    ("guardrails", "Safety check"),
+    ("memory", "Use recent context"),
+    ("embed", "Embed question"),
+    ("generate", "Generate Cypher"),
+    ("validate", "Validate (read-only)"),
+    ("run", "Run on Neo4j"),
+    ("fallback", "Fallback search"),
+    ("nodes", "Relevant nodes"),
+    ("confidence", "Confidence check"),
+    ("answer", "Write answer"),
+]
+
+
+def render_timeline(state: dict) -> str:
+    """state: key -> (label, status, detail). Build the timeline HTML."""
+    html = "<div class='tl-title'>🧠 Thinking…</div>"
+    for key, default_label in TIMELINE_STEPS:
+        if key not in state:
+            continue  # only show stages that actually fired
+        label, status, detail = state[key]
+        cls = {"run": "tl-run", "done": "tl-done", "warn": "tl-warn",
+               "block": "tl-block"}.get(status, "")
+        det = (detail or "")[:120]
+        html += (f"<div class='tl-step {cls}'><div class='tl-dot'></div>"
+                 f"<div class='tl-label'>{label}</div>"
+                 f"<div class='tl-detail'>{det}</div></div>")
+    return html
 
 
 @st.cache_resource(show_spinner="Loading models and connecting to the graph...")
@@ -175,6 +227,18 @@ def main():
         st.markdown(f"**Neo4j** &nbsp; {neo}", unsafe_allow_html=True)
         st.markdown(f"**LLM** &nbsp;&nbsp;&nbsp; {llm}", unsafe_allow_html=True)
 
+        # ---- recent conversation memory (last 5, per-session) ----
+        hist = st.session_state.get("history", [])
+        if hist:
+            st.divider()
+            st.markdown("### 🕘 Recent")
+            st.caption("last 5 turns — used as follow-up context")
+            for h in reversed(hist):
+                st.markdown(f"- **{h['q'][:40]}**")
+            if st.button("🗑️ Clear memory"):
+                st.session_state["history"] = []
+                st.rerun()
+
     placeholder = {
         "General Q&A": "What can I take for a headache?",
         "Medicine lookup": "Paracetamol",
@@ -195,38 +259,84 @@ def main():
     else:
         question = query
 
-    with st.spinner("🧠 Thinking — searching the graph & generating an answer..."):
-        result = engine.answer(question, k=top_k)
+    # ---- two columns: timeline (left) + answer (right) ----
+    left, right = st.columns([1, 2], gap="large")
+    timeline_box = left.empty()
+    answer_box = right.empty()
+
+    # live state — callback updates it and re-renders the animated timeline.
+    # We keep the FULL detail (untruncated) AND the order steps fired, so we can
+    # show clickable expanders afterwards.
+    state: dict = {}
+    order: list = []
+
+    def on_step(key, label, status, detail):
+        if key not in state:
+            order.append(key)
+        state[key] = (label, status, detail)
+        timeline_box.markdown(render_timeline(state), unsafe_allow_html=True)
+
+    answer_box.markdown(
+        "<div class='answer-card' style='opacity:0.6;'>⏳ working on it…</div>",
+        unsafe_allow_html=True,
+    )
+    # pass the last 5 turns as short conversation memory
+    history = st.session_state.get("history", [])
+    result = engine.answer(question, k=top_k, step=on_step, history=history)
+
+    # ---- after the run: replace the animated timeline with CLICKABLE steps ----
+    timeline_box.empty()
+    with left:
+        st.markdown("<div class='tl-title'>🧠 Reasoning steps</div>", unsafe_allow_html=True)
+        st.caption("click a step to see its full detail")
+        icon = {"done": "🟢", "warn": "🟡", "block": "🔴", "run": "🔵"}
+        for key in order:
+            label, status, detail = state[key]
+            # auto-open the "Relevant nodes" step so the searched medicines show
+            with st.expander(f"{icon.get(status,'⚪')} {label}", expanded=(key == "nodes")):
+                if key == "generate" and detail.strip().upper().startswith("CALL"):
+                    st.code(detail, language="cypher")        # full Cypher
+                elif key == "nodes":
+                    for line in (detail or "").split("\n"):
+                        st.markdown(f"- {line}")               # one node per line
+                else:
+                    st.write(detail or "—")
 
     # ---- a guardrail blocked the query ----
     if result.get("blocked"):
-        st.markdown(
+        answer_box.markdown(
             f"<div class='answer-card' style='border-color:rgba(255,92,124,0.5);"
             f"box-shadow:0 0 30px rgba(255,92,124,0.18);'>{result['answer']}</div>",
             unsafe_allow_html=True,
         )
-        st.caption(f"🛡️ Blocked by guardrail: `{result.get('reason', '')}`")
+        right.caption(f"🛡️ Blocked by guardrail: `{result.get('reason', '')}`")
         return
 
-    # ---- answer card ----
+    # ---- answer card (right column) ----
     mode_tag = result.get("mode", "")
-    st.markdown("#### 🩺 Answer")
-    st.markdown(f"<div class='answer-card'>{result['answer']}</div>", unsafe_allow_html=True)
+    answer_html = "<div class='answer-card'>" + result["answer"].replace("\n", "<br>") + "</div>"
+    answer_box.markdown(answer_html, unsafe_allow_html=True)
     if mode_tag:
-        st.caption(f"retrieval mode: `{mode_tag}`")
+        right.caption(f"retrieval mode: `{mode_tag}`")
 
-    # ---- source chips ----
     if result.get("sources"):
-        st.markdown("#### 🔎 Retrieved medicines")
-        chips = ""
-        for h in result["sources"]:
-            score = h.get("score", 0.0)
-            chips += (f"<span class='src-chip'>{h['name']} "
-                      f"<span class='src-score'>{score:.2f}</span></span>")
-        st.markdown(chips, unsafe_allow_html=True)
+        chips = "".join(
+            f"<span class='src-chip'>{h['name']} "
+            f"<span class='src-score'>{h.get('score', 0.0):.2f}</span></span>"
+            for h in result["sources"]
+        )
+        right.markdown("**🔎 Retrieved medicines**", unsafe_allow_html=True)
+        right.markdown(chips, unsafe_allow_html=True)
 
-    with st.expander("🧩 Raw context sent to the LLM"):
+    with right.expander("⚙️ Generated Cypher query"):
+        st.code(result.get("cypher") or "(used fallback vector search — no LLM Cypher)", language="cypher")
+    with right.expander("🧩 Raw context sent to the LLM"):
         st.code(result.get("context", ""))
+
+    # ---- save this turn into per-session memory (keep only the last 5) ----
+    hist = st.session_state.get("history", [])
+    hist.append({"q": question, "a": result["answer"]})
+    st.session_state["history"] = hist[-5:]
 
 
 if __name__ == "__main__":
